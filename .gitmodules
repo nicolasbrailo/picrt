@@ -1,0 +1,3 @@
+[submodule "rpiz-xcompile"]
+	path = rpiz-xcompile
+	url = https://github.com/nicolasbrailo/rpiz-xcompile.git

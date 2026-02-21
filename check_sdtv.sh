@@ -35,6 +35,11 @@ check "sdtv_aspect="
 check "enable_tvout=1"
 check "dtoverlay=vc4-fkms-v3d"
 
+# core_freq must be pinned or composite sync will drift
+# watch -n1 vcgencmd measure_clock core
+# Pi 3: core_freq=250, Pi 4: core_freq=500
+check "core_freq="
+
 if $ok; then
   echo "$CFG looks fine."
 else
