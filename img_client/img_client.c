@@ -8,7 +8,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #define PREFETCH_N 3
 #define MAX_URL_LEN 512
@@ -16,8 +15,6 @@
 struct img_client_ctx {
     struct downloader_ctx* dl;
     struct image_prefetcher_ctx* prefetcher;
-    image_ready_cb on_image_ready;
-    void* cb_usr;
 };
 
 static unsigned char* dl_callback(void* usr, size_t* out_sz) {
@@ -119,16 +116,11 @@ static bool register_client(const char* base_url, int screen_w, int screen_h, ch
 }
 
 struct img_client_ctx* img_client_init(int screen_w, int screen_h,
-                                           const char* image_server_url,
-                                           image_ready_cb on_image_ready,
-                                           void* cb_usr) {
+                                       const char* image_server_url) {
     struct img_client_ctx* ctx = malloc(sizeof(struct img_client_ctx));
     if (!ctx) {
         return NULL;
     }
-
-    ctx->on_image_ready = on_image_ready;
-    ctx->cb_usr = cb_usr;
 
     char img_url[MAX_URL_LEN];
     if (!register_client(image_server_url, screen_w, screen_h, img_url, MAX_URL_LEN)) {
@@ -154,21 +146,6 @@ struct img_client_ctx* img_client_init(int screen_w, int screen_h,
     return ctx;
 }
 
-void img_client_run(struct img_client_ctx* ctx, const volatile sig_atomic_t* running) {
-    struct timespec delay = { .tv_sec = 10, .tv_nsec = 0 };
-
-    while (*running) {
-        struct prefetched_img* img = image_prefetcher_jump_next(ctx->prefetcher);
-        if (img && img->data) {
-            printf("Rendering image (%zu bytes)\n", img->sz);
-            ctx->on_image_ready(ctx->cb_usr, img->data, img->sz);
-        } else {
-            fprintf(stderr, "No image available yet, waiting...\n");
-        }
-        nanosleep(&delay, NULL);
-    }
-}
-
 void img_client_free(struct img_client_ctx* ctx) {
     if (!ctx) {
         return;
@@ -176,4 +153,16 @@ void img_client_free(struct img_client_ctx* ctx) {
     image_prefetcher_free(ctx->prefetcher);
     downloader_free(ctx->dl);
     free(ctx);
+}
+
+bool img_client_get_image(struct img_client_ctx* ctx,
+                          const unsigned char** data, size_t* sz) {
+    struct prefetched_img* img = image_prefetcher_jump_next(ctx->prefetcher);
+    if (!img || !img->data) {
+        return false;
+    }
+
+    *data = img->data;
+    *sz = img->sz;
+    return true;
 }

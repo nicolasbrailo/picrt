@@ -21,6 +21,7 @@ struct image_prefetcher_ctx {
     size_t cache_r;                // read index
     size_t cache_w;                // write index
     size_t prefetch_n;
+
 };
 
 static void cache_entry_free(struct prefetched_img* img) {
@@ -149,6 +150,7 @@ void* image_prefetcher_thread(void* usr)
             cnt = cached_count_locked(ctx);
 
             pthread_mutex_unlock(&ctx->cv_mut);
+
             pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
         }
 
@@ -188,3 +190,4 @@ struct prefetched_img* image_prefetcher_jump_next(struct image_prefetcher_ctx* c
 
     return ret;
 }
+

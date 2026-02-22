@@ -1,5 +1,6 @@
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <jpeglib.h>
 
 #include <math.h>
@@ -7,19 +8,31 @@
 #include <stdbool.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <unistd.h>
 #include <time.h>
 
 #include "img_client/img_client.h"
+
 #include "screen.h"
 
-static volatile sig_atomic_t running = 1;
+// Adjust gamma for CRT. This will be washed out in a modern display but should work
+// okay for old CRTs
+#define GAMMA .15
+
+// Image server
+#define IMG_SERVER_URL "http://bati.casa:5000/"
+
+// Sleep between imgs
+#define IMAGE_INTERVAL_SEC 10
+
+sig_atomic_t running = 1;
 
 static void sighandler(int sig) {
     (void)sig;
     running = 0;
 }
 
-static void render_jpeg(struct Screen* s, const char* path, double gamma) {
+static void render_jpeg(struct screen* s, const char* path, double gamma) {
     FILE* f = fopen(path, "rb");
     if (!f) {
         perror(path);
@@ -54,8 +67,7 @@ static void render_jpeg(struct Screen* s, const char* path, double gamma) {
     unsigned char *row = malloc(row_stride);
     int y = 0;
 
-    memset(s->fb, 0, s->stride * s->height);
-
+    screen_clear(s);
     while (cinfo.output_scanline < cinfo.output_height) {
         jpeg_read_scanlines(&cinfo, &row, 1);
         int sy = y - off_y;
@@ -78,7 +90,7 @@ static void render_jpeg(struct Screen* s, const char* path, double gamma) {
     fclose(f);
 }
 
-static void render_jpeg_from_mem(struct Screen* s, const unsigned char* data, size_t sz, double gamma) {
+static void render_jpeg_from_mem(struct screen* s, const unsigned char* data, size_t sz, double gamma) {
     struct jpeg_decompress_struct cinfo;
     struct jpeg_error_mgr jerr;
     cinfo.err = jpeg_std_error(&jerr);
@@ -111,8 +123,7 @@ static void render_jpeg_from_mem(struct Screen* s, const unsigned char* data, si
     unsigned char *row = malloc(row_stride);
     int y = 0;
 
-    memset(s->fb, 0, s->stride * s->height);
-
+    screen_clear(s);
     while (cinfo.output_scanline < cinfo.output_height) {
         jpeg_read_scanlines(&cinfo, &row, 1);
         int sy = y - off_y;
@@ -135,33 +146,68 @@ static void render_jpeg_from_mem(struct Screen* s, const unsigned char* data, si
 }
 
 
-static void on_image_ready(void* usr, const unsigned char* data, size_t sz) {
-    struct Screen* s = usr;
-    render_jpeg_from_mem(s, data, sz, 0.1);
+void render_lissajous(struct screen* s) {
+    struct timespec frame = { .tv_sec = 0, .tv_nsec = 33333333 }; /* ~30fps */
+    double t = 0;
+    while (running) {
+      {
+        int cx = s->width / 2 + (int)(40 * sin(t * 0.5));
+        int cy = s->height / 2;
+        int rx = cx - 20;
+        int ry = cy - 20;
+
+        double a = 3.0, b = 2.0, delta = M_PI * sin(t * 0.8);
+        int trail = 2000;
+
+        screen_clear(s);
+        for (int i = 0; i < trail; i++) {
+            double p = t + (double)i * (2.0 * M_PI / trail);
+            int x = cx + (int)(rx * sin(a * p + delta));
+            int y = cy + (int)(ry * sin(b * p));
+
+            unsigned char brightness = 128 + (unsigned char)(127.0 * i / trail);
+
+            for (int dy = -1; dy <= 1; dy++)
+                for (int dx = -1; dx <= 1; dx++)
+                    screen_set_pixel(s, x + dx, y + dy, brightness);
+        }
+      }
+
+      screen_flip(s);
+      t += 0.02;
+      nanosleep(&frame, NULL);
+    }
 }
 
-void render_lissajous(struct Screen* s, double t) {
-    memset(s->fb, 0, s->stride * s->height);
+static void render_single_img(struct screen* s, const char* img_path) {
+      render_jpeg(s, img_path, GAMMA);
+      printf("Rendered %s. Press Ctrl-C to exit.\n", img_path);
+      while (running) {
+        screen_flip(s);
+        usleep(16000);
+      }
+}
 
-    int cx = s->width / 2 + (int)(40 * sin(t * 0.5));
-    int cy = s->height / 2;
-    int rx = cx - 20;
-    int ry = cy - 20;
-
-    double a = 3.0, b = 2.0, delta = M_PI * sin(t * 0.8);
-    int trail = 2000;
-
-    for (int i = 0; i < trail; i++) {
-        double p = t + (double)i * (2.0 * M_PI / trail);
-        int x = cx + (int)(rx * sin(a * p + delta));
-        int y = cy + (int)(ry * sin(b * p));
-
-        unsigned char brightness = 128 + (unsigned char)(127.0 * i / trail);
-
-        for (int dy = -1; dy <= 1; dy++)
-            for (int dx = -1; dx <= 1; dx++)
-                screen_set_pixel(s, x + dx, y + dy, brightness);
-    }
+static void render_img_client(struct screen* s) {
+      struct img_client_ctx* img_render = img_client_init(s->width, s->height, IMG_SERVER_URL);
+      if (img_render) {
+        time_t last_image = 0;  // show first image immediately
+        while (running) {
+          time_t now = time(NULL);
+          if (now - last_image >= IMAGE_INTERVAL_SEC) {
+            const unsigned char* data;
+            size_t sz;
+            if (img_client_get_image(img_render, &data, &sz)) {
+              printf("Rendering image (%zu bytes)\n", sz);
+              render_jpeg_from_mem(s, data, sz, GAMMA);
+              last_image = now;
+            }
+          }
+          screen_flip(s);
+          usleep(50000);
+        }
+        img_client_free(img_render);
+      }
 }
 
 int main(int argc, char* argv[]) {
@@ -171,26 +217,30 @@ int main(int argc, char* argv[]) {
     // Monitor when parent is killed, so we can run over ssh and exit when session closes
     prctl(PR_SET_PDEATHSIG, SIGTERM);
 
-    struct Screen* s = screen_new();
+    struct screen* s = screen_new();
     if (s == NULL) {
       return 1;
     }
 
-    if (argc > 1) {
-      render_jpeg(s, argv[1], /*gamma=*/.1);
-      printf("Rendered %s. Press Ctrl-C to exit.\n", argv[1]);
-      while (running) {
-        pause();
-      }
-    } else {
-      struct img_client_ctx* img_render = img_client_init(s->width, s->height, "http://bati.casa:5000/", on_image_ready, s);
-      if (img_render) {
-        img_client_run(img_render, &running);
-        img_client_free(img_render);
-      }
+    char run_mode = 's';
+    if (argc > 1 && argv[1][0] == '-') {
+      run_mode = argv[1][1];
     }
 
-    memset(s->fb, 0, s->stride * s->height);
+    if (run_mode == 's') {
+      render_img_client(s);
+    } else if (run_mode == 'l') {
+      render_lissajous(s);
+    } else if (run_mode == 'f' && argc > 2) {
+      render_single_img(s, argv[2]);
+    } else {
+      printf("%s [-s|-l|-f file] - Do something with a CRT\n", argv[0]);
+      printf("  -s  Display from image server\n");
+      printf("  -f  Display a picture. Provide path after -f.\n");
+      printf("  -l  Render a Lissajous figure so your CRT looks sciency\n");
+      printf("  -h  Help\n");
+    }
+
     screen_free(s);
     printf("\nClean exit.\n");
     return 0;
