@@ -25,6 +25,12 @@
 // Sleep between imgs
 #define IMAGE_INTERVAL_SEC 10
 
+// Delay per scanline during reveal (microseconds), used when rendering a picture to the screen.
+// Without this, the picture is displayed immediately, which is obviously wrong because a CRT
+// is old so it must be slow. 500us will be about 300ms to display an image, 1ms will be about half
+// a second. Set to zero to disable effect.
+#define SCANLINE_DELAY_US 1000
+
 sig_atomic_t running = 1;
 
 static void sighandler(int sig) {
@@ -68,7 +74,7 @@ static void render_jpeg(struct screen* s, const char* path, double gamma) {
     int y = 0;
 
     screen_clear(s);
-    while (cinfo.output_scanline < cinfo.output_height) {
+    while (cinfo.output_scanline < cinfo.output_height && running) {
         jpeg_read_scanlines(&cinfo, &row, 1);
         int sy = y - off_y;
         if (sy >= 0 && sy < s->height) {
@@ -80,6 +86,8 @@ static void render_jpeg(struct screen* s, const char* path, double gamma) {
                 unsigned char val = (unsigned char)(255.0 * pow((0.299 * r + 0.587 * g + 0.114 * b) / 255.0, gamma));
                 screen_set_pixel(s, x, sy, val);
             }
+            screen_flip(s);
+            if (SCANLINE_DELAY_US) usleep(SCANLINE_DELAY_US);
         }
         y++;
     }
@@ -124,7 +132,7 @@ static void render_jpeg_from_mem(struct screen* s, const unsigned char* data, si
     int y = 0;
 
     screen_clear(s);
-    while (cinfo.output_scanline < cinfo.output_height) {
+    while (cinfo.output_scanline < cinfo.output_height && running) {
         jpeg_read_scanlines(&cinfo, &row, 1);
         int sy = y - off_y;
         if (sy >= 0 && sy < s->height) {
@@ -136,6 +144,8 @@ static void render_jpeg_from_mem(struct screen* s, const unsigned char* data, si
                 unsigned char val = (unsigned char)(255.0 * pow((0.299 * r + 0.587 * g + 0.114 * b) / 255.0, gamma));
                 screen_set_pixel(s, x, sy, val);
             }
+            screen_flip(s);
+            if (SCANLINE_DELAY_US) usleep(SCANLINE_DELAY_US);
         }
         y++;
     }
